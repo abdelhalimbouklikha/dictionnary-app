@@ -78,7 +78,18 @@ final class SQLiteConnection: @unchecked Sendable {
     func execute(_ sql: String, bindings: [SQLiteValue] = []) throws {
         let statement = try prepare(sql, bindings: bindings)
         defer { sqlite3_finalize(statement) }
-        guard sqlite3_step(statement) == SQLITE_DONE else {
+        
+        while true {
+            let status = sqlite3_step(statement)
+
+            if status == SQLITE_DONE {
+                return
+            }
+
+            if status == SQLITE_ROW {
+                continue
+            }
+
             throw DatabaseError.step(errorMessage)
         }
     }
