@@ -82,6 +82,7 @@ actor UserStore {
         )
         try database.execute("CREATE INDEX IF NOT EXISTS favorites_normalized_idx ON favorites(normalized_word)")
         try database.execute("CREATE INDEX IF NOT EXISTS collection_words_sort_idx ON collection_words(collection_id, normalized_word, added_at)")
+        try database.execute("CREATE INDEX IF NOT EXISTS collection_words_word_idx ON collection_words(word_id, collection_id)")
         try database.execute("CREATE INDEX IF NOT EXISTS recent_words_date_idx ON recent_words(viewed_at DESC)")
     }
 
@@ -180,6 +181,13 @@ actor UserStore {
             "SELECT 1 FROM collection_words WHERE collection_id = ? AND word_id = ? LIMIT 1",
             bindings: [.text(collectionID), .text(wordID)]
         ).isEmpty
+    }
+
+    func collectionMemberships(for wordID: String) throws -> Set<String> {
+        Set(try database.rows(
+            "SELECT collection_id FROM collection_words WHERE word_id = ?",
+            bindings: [.text(wordID)]
+        ).compactMap { $0["collection_id"]?.string })
     }
 
     func setWord(_ word: WordSummary, in collectionID: String, included: Bool) throws {

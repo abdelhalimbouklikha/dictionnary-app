@@ -13,25 +13,41 @@ actor DictionaryRepository {
         database = try SQLiteConnection(url: url, readOnly: true)
     }
 
+    init(databaseURL: URL) throws {
+        self.databaseURL = databaseURL
+        database = try SQLiteConnection(url: databaseURL, readOnly: true)
+    }
+
     func search(_ rawQuery: String, limit: Int = 40) throws -> [WordSummary] {
         try Task.checkCancellation()
         let query = SearchNormalizer.normalize(rawQuery)
-        guard !query.isEmpty else { return [] }
+        guard !query.isEmpty, limit > 0 else { return [] }
+        let safeLimit = min(limit, 100)
         let upperBound = query + "\u{10FFFF}"
         let rows = try database.rows(
             """
-            WITH matches AS (
+            WITH exact_matches AS (
                 SELECT id, word, pos_title, normalized_word, 0 AS rank
-                  FROM entries WHERE normalized_word = ?
-                UNION ALL
-                SELECT id, word, pos_title, normalized_word, 1 AS rank
                   FROM entries
+                 WHERE normalized_word = ?
+            ), word_matches AS (
+                SELECT id, word, pos_title, normalized_word, 1 AS rank
+                  FROM entries INDEXED BY entries_normalized_word_idx
                  WHERE normalized_word >= ? AND normalized_word < ?
                    AND normalized_word <> ?
-                UNION ALL
+                 ORDER BY normalized_word, word
+                 LIMIT ?
+            ), form_matches AS (
                 SELECT e.id, e.word, e.pos_title, e.normalized_word, 2 AS rank
-                  FROM forms f JOIN entries e ON e.rowid = f.entry_rowid
+                  FROM forms f INDEXED BY forms_normalized_idx
+                  JOIN entries e ON e.rowid = f.entry_rowid
                  WHERE f.normalized_form >= ? AND f.normalized_form < ?
+                 ORDER BY f.normalized_form, e.normalized_word, e.word
+                 LIMIT ?
+            ), matches AS (
+                SELECT * FROM exact_matches
+                UNION ALL SELECT * FROM word_matches
+                UNION ALL SELECT * FROM form_matches
             )
             SELECT id, word, pos_title
               FROM matches
@@ -41,7 +57,8 @@ actor DictionaryRepository {
             """,
             bindings: [
                 .text(query), .text(query), .text(upperBound), .text(query),
-                .text(query), .text(upperBound), .integer(Int64(limit))
+                .integer(Int64(safeLimit * 4)), .text(query), .text(upperBound),
+                .integer(Int64(safeLimit * 8)), .integer(Int64(safeLimit))
             ]
         )
         try Task.checkCancellation()
@@ -54,6 +71,7 @@ actor DictionaryRepository {
     }
 
     func entry(id: String) throws -> WordEntry? {
+        try Task.checkCancellation()
         let entryRows = try database.rows(
             "SELECT rowid AS entry_rowid, id, word, pos_title, gender, etymology FROM entries WHERE id = ? LIMIT 1",
             bindings: [.text(id)]
@@ -76,25 +94,36 @@ actor DictionaryRepository {
             "SELECT id, ordinal, definition, tags_json FROM senses WHERE entry_rowid = ? ORDER BY ordinal",
             bindings: [.integer(entryRowID)]
         )
-        var senses: [WordSense] = []
-        for value in senseRows {
-            guard let senseID = value["id"]?.int64,
-                  let definition = value["definition"]?.string else { continue }
-            let exampleRows = try database.rows(
-                "SELECT id, text, source FROM examples WHERE sense_id = ? ORDER BY ordinal",
-                bindings: [.integer(senseID)]
+        let exampleRows = try database.rows(
+            """
+            SELECT ex.id, ex.sense_id, ex.text, ex.source
+              FROM examples ex
+              JOIN senses s ON s.id = ex.sense_id
+             WHERE s.entry_rowid = ?
+             ORDER BY s.ordinal, ex.ordinal
+            """,
+            bindings: [.integer(entryRowID)]
+        )
+        var examplesBySenseID: [Int64: [WordExample]] = [:]
+        examplesBySenseID.reserveCapacity(senseRows.count)
+        for item in exampleRows {
+            guard let senseID = item["sense_id"]?.int64,
+                  let exampleID = item["id"]?.int64,
+                  let text = item["text"]?.string else { continue }
+            examplesBySenseID[senseID, default: []].append(
+                WordExample(id: exampleID, text: text, source: item["source"]?.string)
             )
-            let examples = exampleRows.compactMap { item -> WordExample? in
-                guard let exampleID = item["id"]?.int64, let text = item["text"]?.string else { return nil }
-                return WordExample(id: exampleID, text: text, source: item["source"]?.string)
-            }
-            senses.append(WordSense(
+        }
+        let senses = senseRows.compactMap { value -> WordSense? in
+            guard let senseID = value["id"]?.int64,
+                  let definition = value["definition"]?.string else { return nil }
+            return WordSense(
                 id: senseID,
-                ordinal: value["ordinal"]?.int ?? senses.count,
+                ordinal: value["ordinal"]?.int ?? 0,
                 definition: definition,
                 tags: Self.decodeTags(value["tags_json"]?.string),
-                examples: examples
-            ))
+                examples: examplesBySenseID.removeValue(forKey: senseID) ?? []
+            )
         }
 
         let formRows = try database.rows(
@@ -117,6 +146,15 @@ actor DictionaryRepository {
                   let relatedWord = value["word"]?.string else { return nil }
             return WordRelation(id: relationID, kind: kind, word: relatedWord)
         }
+        var relationsByKind: [RelationKind: [WordRelation]] = [:]
+        relationsByKind.reserveCapacity(RelationKind.allCases.count)
+        for relation in relations {
+            relationsByKind[relation.kind, default: []].append(relation)
+        }
+        let relationSections = RelationKind.allCases.compactMap { kind -> WordRelationSection? in
+            guard let values = relationsByKind.removeValue(forKey: kind), !values.isEmpty else { return nil }
+            return WordRelationSection(kind: kind, relations: values)
+        }
 
         return WordEntry(
             id: id,
@@ -127,9 +165,16 @@ actor DictionaryRepository {
             pronunciations: pronunciations,
             senses: senses,
             forms: forms,
-            relations: relations
+            relations: relations,
+            relationSections: relationSections
         )
     }
+
+#if DEBUG
+    func preparedStatementCountForTesting() -> Int {
+        database.preparedStatementCount
+    }
+#endif
 
     func metadata() throws -> DictionaryInfo {
         let values: [String: String] = Dictionary(uniqueKeysWithValues: try database.rows("SELECT key, value FROM metadata").compactMap { row in

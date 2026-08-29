@@ -60,7 +60,7 @@ struct CollectionsView: View {
                 Button { showingCreate = true } label: { Image(systemName: "plus") }
                     .accessibilityLabel("Créer une collection")
             }
-            .onAppear { Task { await load() } }
+            .task { await load() }
             .refreshable { await load() }
             .sheet(isPresented: $showingCreate) {
                 CollectionNameSheet(title: "Nouvelle collection", initialName: "") { name in

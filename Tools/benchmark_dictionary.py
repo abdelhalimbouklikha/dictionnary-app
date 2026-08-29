@@ -14,18 +14,28 @@ from build_dictionary import normalize_search
 
 
 SEARCH_SQL = """
-WITH matches AS (
+WITH exact_matches AS (
     SELECT id, word, pos_title, normalized_word, 0 AS rank
-      FROM entries WHERE normalized_word = :query
-    UNION ALL
-    SELECT id, word, pos_title, normalized_word, 1 AS rank
       FROM entries
+     WHERE normalized_word = :query
+), word_matches AS (
+    SELECT id, word, pos_title, normalized_word, 1 AS rank
+      FROM entries INDEXED BY entries_normalized_word_idx
      WHERE normalized_word >= :query AND normalized_word < :upper
        AND normalized_word <> :query
-    UNION ALL
+     ORDER BY normalized_word, word
+     LIMIT (:limit * 4)
+), form_matches AS (
     SELECT e.id, e.word, e.pos_title, e.normalized_word, 2 AS rank
-      FROM forms f JOIN entries e ON e.rowid = f.entry_rowid
+      FROM forms f INDEXED BY forms_normalized_idx
+      JOIN entries e ON e.rowid = f.entry_rowid
      WHERE f.normalized_form >= :query AND f.normalized_form < :upper
+     ORDER BY f.normalized_form, e.normalized_word, e.word
+     LIMIT (:limit * 8)
+), matches AS (
+    SELECT * FROM exact_matches
+    UNION ALL SELECT * FROM word_matches
+    UNION ALL SELECT * FROM form_matches
 )
 SELECT id, word, pos_title
   FROM matches

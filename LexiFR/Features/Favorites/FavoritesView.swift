@@ -33,7 +33,7 @@ struct FavoritesView: View {
             .navigationDestination(for: WordSummary.self) { WordDetailView(summary: $0) }
             .toolbar { sortMenu }
             .refreshable { await load() }
-            .onAppear { Task { await load() } }
+            .task { await load() }
             .onChange(of: sort) { _, _ in
                 Task {
                     try? await app.userStore?.setPreference(sort.rawValue, key: "favorites.sort")

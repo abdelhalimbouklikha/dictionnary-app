@@ -18,7 +18,7 @@ struct WordDetailView: View {
                     header(entry)
                     personalImage
                     definitions(entry)
-                    relationSections(entry)
+                    relationSections(entry.relationSections)
                     forms(entry)
                     if let etymology = entry.etymology, !etymology.isEmpty {
                         section(title: "Étymologie") {
@@ -27,6 +27,7 @@ struct WordDetailView: View {
                     }
                     actions(entry)
                 }
+                .id(entry.id)
                 .padding(.horizontal, LexiStyle.horizontalMargin)
                 .padding(.vertical, 18)
             } else {
@@ -46,14 +47,16 @@ struct WordDetailView: View {
                 Button(action: viewModel.toggleFavorite) {
                     Image(systemName: viewModel.isFavorite ? "heart.fill" : "heart")
                 }
+                .disabled(viewModel.isLoading || viewModel.entry == nil)
                 .accessibilityLabel(viewModel.isFavorite ? "Retirer des favoris" : "Ajouter aux favoris")
                 Button { showingCollections = true } label: {
                     Image(systemName: "square.stack.badge.plus")
                 }
+                .disabled(viewModel.isLoading || viewModel.entry == nil)
                 .accessibilityLabel("Gérer les collections")
             }
         }
-        .task {
+        .task(id: summary.id) {
             await viewModel.load(
                 summary: summary,
                 dictionary: app.dictionary,
@@ -118,70 +121,20 @@ struct WordDetailView: View {
     }
 
     private func definitions(_ entry: WordEntry) -> some View {
-        VStack(alignment: .leading, spacing: 22) {
-            ForEach(Array(entry.senses.enumerated()), id: \.element.id) { index, sense in
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text("\(index + 1)")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 18, alignment: .trailing)
-                        Text(sense.definition)
-                            .font(.system(.body, design: .serif))
-                            .lineSpacing(4)
-                            .textSelection(.enabled)
-                    }
-                    ForEach(sense.examples) { example in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(example.text)
-                                .font(.callout)
-                                .italic()
-                                .foregroundStyle(.secondary)
-                            if let source = example.source {
-                                Text(source).font(.caption2).foregroundStyle(.tertiary)
-                            }
-                        }
-                        .padding(.leading, 30)
-                    }
-                }
-            }
-        }
+        ProgressiveDefinitionsView(senses: entry.senses)
     }
 
     @ViewBuilder
-    private func relationSections(_ entry: WordEntry) -> some View {
-        ForEach(RelationKind.allCases, id: \.self) { kind in
-            let relations = entry.relations.filter { $0.kind == kind }
-            if !relations.isEmpty {
-                section(title: kind.title) {
-                    FlowLayout(spacing: 8) {
-                        ForEach(relations) { relation in
-                            NavigationLink {
-                                RelatedWordDestination(word: relation.word)
-                            } label: {
-                                Text(relation.word)
-                                    .font(.subheadline)
-                                    .padding(.horizontal, 11)
-                                    .padding(.vertical, 7)
-                                    .background(.quaternary, in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                }
-            }
+    private func relationSections(_ sections: [WordRelationSection]) -> some View {
+        ForEach(sections) { relationSection in
+            ProgressiveRelationSection(section: relationSection)
         }
     }
 
     @ViewBuilder
     private func forms(_ entry: WordEntry) -> some View {
         if !entry.forms.isEmpty {
-            section(title: "Formes") {
-                Text(entry.forms.prefix(60).map(\.form).joined(separator: " · "))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-            }
+            ProgressiveFormsView(forms: entry.forms)
         }
     }
 
@@ -220,6 +173,176 @@ struct WordDetailView: View {
             .replacingOccurrences(of: "feminine", with: "féminin")
             .replacingOccurrences(of: "common-gender", with: "genre commun")
             .replacingOccurrences(of: "neuter", with: "neutre")
+    }
+}
+
+enum WordDetailRenderingPolicy {
+    static let initialSenseCount = 30
+    static let senseBatchSize = 30
+    static let initialExampleCount = 8
+    static let exampleBatchSize = 20
+    static let initialRelationCount = 24
+    static let relationBatchSize = 48
+    static let initialFormCount = 60
+    static let formBatchSize = 60
+
+    static func expandedCount(current: Int, total: Int, batchSize: Int) -> Int {
+        min(total, current + batchSize)
+    }
+}
+
+private struct ProgressiveDefinitionsView: View {
+    let senses: [WordSense]
+    @State private var visibleCount = WordDetailRenderingPolicy.initialSenseCount
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 22) {
+            ForEach(senses.indices.prefix(visibleCount), id: \.self) { index in
+                SenseRow(number: index + 1, sense: senses[index])
+            }
+            if visibleCount < senses.count {
+                ShowMoreButton(
+                    remaining: senses.count - visibleCount,
+                    noun: "sens"
+                ) {
+                    visibleCount = WordDetailRenderingPolicy.expandedCount(
+                        current: visibleCount,
+                        total: senses.count,
+                        batchSize: WordDetailRenderingPolicy.senseBatchSize
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct SenseRow: View {
+    let number: Int
+    let sense: WordSense
+    @State private var visibleExampleCount = WordDetailRenderingPolicy.initialExampleCount
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Text("\(number)")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, alignment: .trailing)
+                Text(sense.definition)
+                    .font(.system(.body, design: .serif))
+                    .lineSpacing(4)
+                    .textSelection(.enabled)
+            }
+            LazyVStack(alignment: .leading, spacing: 10) {
+                ForEach(sense.examples.prefix(visibleExampleCount)) { example in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(example.text)
+                            .font(.callout)
+                            .italic()
+                            .foregroundStyle(.secondary)
+                        if let source = example.source {
+                            Text(source).font(.caption2).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 30)
+                }
+                if visibleExampleCount < sense.examples.count {
+                    ShowMoreButton(
+                        remaining: sense.examples.count - visibleExampleCount,
+                        noun: "exemple"
+                    ) {
+                        visibleExampleCount = WordDetailRenderingPolicy.expandedCount(
+                            current: visibleExampleCount,
+                            total: sense.examples.count,
+                            batchSize: WordDetailRenderingPolicy.exampleBatchSize
+                        )
+                    }
+                    .padding(.leading, 30)
+                }
+            }
+        }
+    }
+}
+
+private struct ProgressiveRelationSection: View {
+    let section: WordRelationSection
+    @State private var visibleCount = WordDetailRenderingPolicy.initialRelationCount
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel(title: section.kind.title)
+            FlowLayout(spacing: 8) {
+                ForEach(section.relations.prefix(visibleCount)) { relation in
+                    NavigationLink {
+                        RelatedWordDestination(word: relation.word)
+                    } label: {
+                        Text(relation.word)
+                            .font(.subheadline)
+                            .lineLimit(1)
+                            .padding(.horizontal, 11)
+                            .padding(.vertical, 7)
+                            .background(.quaternary, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            if visibleCount < section.relations.count {
+                ShowMoreButton(
+                    remaining: section.relations.count - visibleCount,
+                    noun: "terme"
+                ) {
+                    visibleCount = WordDetailRenderingPolicy.expandedCount(
+                        current: visibleCount,
+                        total: section.relations.count,
+                        batchSize: WordDetailRenderingPolicy.relationBatchSize
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct ProgressiveFormsView: View {
+    let forms: [WordForm]
+    @State private var visibleCount = WordDetailRenderingPolicy.initialFormCount
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionLabel(title: "Formes")
+            Text(forms.prefix(visibleCount).map(\.form).joined(separator: " · "))
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+            if visibleCount < forms.count {
+                ShowMoreButton(remaining: forms.count - visibleCount, noun: "forme") {
+                    visibleCount = WordDetailRenderingPolicy.expandedCount(
+                        current: visibleCount,
+                        total: forms.count,
+                        batchSize: WordDetailRenderingPolicy.formBatchSize
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct ShowMoreButton: View {
+    let remaining: Int
+    let noun: String
+    let action: () -> Void
+
+    var body: some View {
+        let displayedNoun = noun == "sens" || remaining == 1 ? noun : "\(noun)s"
+        Button(action: action) {
+            Label(
+                "Afficher plus (\(remaining) \(displayedNoun))",
+                systemImage: "chevron.down"
+            )
+            .font(.subheadline.weight(.medium))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.tint)
     }
 }
 
@@ -290,38 +413,67 @@ private struct RelatedWordDestination: View {
 private struct FlowLayout: Layout {
     var spacing: CGFloat
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let width = proposal.width ?? 0
+    struct Cache {
+        var sizes: [CGSize]
+    }
+
+    func makeCache(subviews: Subviews) -> Cache {
+        Cache(sizes: subviews.map { $0.sizeThatFits(.unspecified) })
+    }
+
+    func updateCache(_ cache: inout Cache, subviews: Subviews) {
+        if cache.sizes.count < subviews.count {
+            cache.sizes.append(contentsOf: subviews.dropFirst(cache.sizes.count).map {
+                $0.sizeThatFits(.unspecified)
+            })
+        } else {
+            cache.sizes = subviews.map { $0.sizeThatFits(.unspecified) }
+        }
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        let result = arrangement(maximumWidth: proposal.width, sizes: cache.sizes)
+        return CGSize(width: proposal.width ?? result.contentWidth, height: result.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        let result = arrangement(maximumWidth: bounds.width, sizes: cache.sizes)
+        for (index, subview) in subviews.enumerated()
+        where index < result.origins.count && index < cache.sizes.count {
+            let origin = result.origins[index]
+            let size = cache.sizes[index]
+            subview.place(
+                at: CGPoint(x: bounds.minX + origin.x, y: bounds.minY + origin.y),
+                proposal: ProposedViewSize(size)
+            )
+        }
+    }
+
+    private func arrangement(maximumWidth: CGFloat?, sizes: [CGSize]) -> LayoutResult {
+        let width = maximumWidth.flatMap { $0 > 0 ? $0 : nil } ?? .infinity
+        var origins: [CGPoint] = []
+        origins.reserveCapacity(sizes.count)
         var x: CGFloat = 0
         var y: CGFloat = 0
         var rowHeight: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+        var contentWidth: CGFloat = 0
+        for size in sizes {
             if x > 0, x + size.width > width {
                 x = 0
                 y += rowHeight + spacing
                 rowHeight = 0
             }
+            origins.append(CGPoint(x: x, y: y))
+            contentWidth = max(contentWidth, x + size.width)
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
-        return CGSize(width: width, height: y + rowHeight)
+        return LayoutResult(origins: origins, contentWidth: contentWidth, height: y + rowHeight)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
-        var x = bounds.minX
-        var y = bounds.minY
-        var rowHeight: CGFloat = 0
-        for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
-            if x > bounds.minX, x + size.width > bounds.maxX {
-                x = bounds.minX
-                y += rowHeight + spacing
-                rowHeight = 0
-            }
-            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
-            x += size.width + spacing
-            rowHeight = max(rowHeight, size.height)
-        }
+    private struct LayoutResult {
+        let origins: [CGPoint]
+        let contentWidth: CGFloat
+        let height: CGFloat
     }
 }

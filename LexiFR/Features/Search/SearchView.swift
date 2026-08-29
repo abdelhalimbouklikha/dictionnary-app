@@ -51,6 +51,7 @@ struct SearchView: View {
                 searchFocused = true
             }
             .onChange(of: viewModel.query) { _, _ in viewModel.queryChanged() }
+            .onDisappear { viewModel.cancelOutstandingTasks() }
             .alert("Une erreur est survenue", isPresented: Binding(
                 get: { viewModel.errorMessage != nil },
                 set: { if !$0 { viewModel.errorMessage = nil } }

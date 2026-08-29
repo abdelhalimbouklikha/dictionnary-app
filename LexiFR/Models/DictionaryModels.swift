@@ -17,10 +17,17 @@ struct WordEntry: Identifiable, Sendable {
     let senses: [WordSense]
     let forms: [WordForm]
     let relations: [WordRelation]
+    let relationSections: [WordRelationSection]
 
     var summary: WordSummary {
         WordSummary(id: id, word: word, partOfSpeech: partOfSpeech)
     }
+}
+
+struct WordRelationSection: Identifiable, Sendable {
+    var id: RelationKind { kind }
+    let kind: RelationKind
+    let relations: [WordRelation]
 }
 
 struct Pronunciation: Identifiable, Sendable {

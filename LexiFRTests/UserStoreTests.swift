@@ -55,5 +55,7 @@ final class UserStoreTests: XCTestCase {
         let keptInSecond = try await store.collectionContains(collectionID: second.id, wordID: word.id)
         XCTAssertFalse(removedFromFirst)
         XCTAssertTrue(keptInSecond)
+        let memberships = try await store.collectionMemberships(for: word.id)
+        XCTAssertEqual(memberships, [second.id])
     }
 }

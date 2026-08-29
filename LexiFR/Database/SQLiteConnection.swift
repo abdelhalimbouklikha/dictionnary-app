@@ -50,6 +50,7 @@ enum DatabaseError: LocalizedError {
 final class SQLiteConnection: @unchecked Sendable {
     private var handle: OpaquePointer?
     private let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    private(set) var preparedStatementCount = 0
 
     init(url: URL, readOnly: Bool) throws {
         let flags = readOnly
@@ -72,7 +73,7 @@ final class SQLiteConnection: @unchecked Sendable {
     }
 
     deinit {
-        sqlite3_close(handle)
+        sqlite3_close_v2(handle)
     }
 
     func execute(_ sql: String, bindings: [SQLiteValue] = []) throws {
@@ -99,6 +100,9 @@ final class SQLiteConnection: @unchecked Sendable {
         defer { sqlite3_finalize(statement) }
         var result: [[String: SQLiteValue]] = []
         while true {
+            if result.count.isMultiple(of: 64) {
+                try Task.checkCancellation()
+            }
             let status = sqlite3_step(statement)
             if status == SQLITE_DONE { return result }
             guard status == SQLITE_ROW else { throw DatabaseError.step(errorMessage) }
@@ -127,12 +131,18 @@ final class SQLiteConnection: @unchecked Sendable {
     var lastInsertRowID: Int64 { sqlite3_last_insert_rowid(handle) }
 
     private func prepare(_ sql: String, bindings: [SQLiteValue]) throws -> OpaquePointer {
+        guard handle != nil else { throw DatabaseError.prepare("base fermée") }
         var statement: OpaquePointer?
-        guard sqlite3_prepare_v2(handle, sql, -1, &statement, nil) == SQLITE_OK,
-              let statement else {
+        let status = sqlite3_prepare_v2(handle, sql, -1, &statement, nil)
+        guard status == SQLITE_OK, let statement else {
+            if let statement { sqlite3_finalize(statement) }
             throw DatabaseError.prepare(errorMessage)
         }
         do {
+            let expectedBindings = Int(sqlite3_bind_parameter_count(statement))
+            guard expectedBindings == bindings.count else {
+                throw DatabaseError.bind("\(expectedBindings) paramètre(s) attendu(s), \(bindings.count) reçu(s)")
+            }
             for (offset, value) in bindings.enumerated() {
                 let index = Int32(offset + 1)
                 let status: Int32
@@ -144,6 +154,7 @@ final class SQLiteConnection: @unchecked Sendable {
                 }
                 guard status == SQLITE_OK else { throw DatabaseError.bind(errorMessage) }
             }
+            preparedStatementCount += 1
             return statement
         } catch {
             sqlite3_finalize(statement)

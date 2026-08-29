@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import ImageIO
 import UIKit
 
 actor WordImageStore {
@@ -23,18 +24,32 @@ actor WordImageStore {
     }
 
     func save(data: Data, wordID: String) throws -> WordImageRecord {
-        guard let source = UIImage(data: data) else { throw WordImageError.invalidImage }
-        let key = SHA256.hash(data: Data(wordID.utf8)).map { String(format: "%02x", $0) }.joined()
+        try Task.checkCancellation()
+        guard let source = Self.downsampledImage(data: data, maximumPixelSize: 1_800) else {
+            throw WordImageError.invalidImage
+        }
+        let wordKey = SHA256.hash(data: Data(wordID.utf8)).map { String(format: "%02x", $0) }.joined()
+        let contentKey = SHA256.hash(data: data).prefix(6).map { String(format: "%02x", $0) }.joined()
+        let key = "\(wordKey)-\(contentKey)"
         let originalURL = originalsDirectory.appendingPathComponent("\(key).jpg")
         let thumbnailURL = thumbnailsDirectory.appendingPathComponent("\(key).jpg")
-        let original = Self.resized(source, maximumDimension: 1_800, cropSquare: false)
-        let thumbnail = Self.resized(source, maximumDimension: 240, cropSquare: true)
-        guard let originalData = original.jpegData(compressionQuality: 0.84),
+        let thumbnail = Self.squareThumbnail(source, dimension: 240)
+        try Task.checkCancellation()
+        guard let originalData = UIImage(cgImage: source).jpegData(compressionQuality: 0.84),
               let thumbnailData = thumbnail.jpegData(compressionQuality: 0.78) else {
             throw WordImageError.encodingFailed
         }
-        try originalData.write(to: originalURL, options: .atomic)
-        try thumbnailData.write(to: thumbnailURL, options: .atomic)
+        try Task.checkCancellation()
+        let originalAlreadyExisted = fileManager.fileExists(atPath: originalURL.path)
+        let thumbnailAlreadyExisted = fileManager.fileExists(atPath: thumbnailURL.path)
+        do {
+            try originalData.write(to: originalURL, options: .atomic)
+            try thumbnailData.write(to: thumbnailURL, options: .atomic)
+        } catch {
+            if !originalAlreadyExisted { try? fileManager.removeItem(at: originalURL) }
+            if !thumbnailAlreadyExisted { try? fileManager.removeItem(at: thumbnailURL) }
+            throw error
+        }
         return WordImageRecord(originalPath: originalURL.path, thumbnailPath: thumbnailURL.path)
     }
 
@@ -44,25 +59,29 @@ actor WordImageStore {
         }
     }
 
-    private static func resized(_ image: UIImage, maximumDimension: CGFloat, cropSquare: Bool) -> UIImage {
+    private static func downsampledImage(data: Data, maximumPixelSize: Int) -> CGImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return nil }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize
+        ]
+        return CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+    }
+
+    private static func squareThumbnail(_ source: CGImage, dimension: CGFloat) -> UIImage {
+        let image = UIImage(cgImage: source)
         let sourceSize = image.size
-        let targetSize: CGSize
-        let drawRect: CGRect
-        if cropSquare {
-            targetSize = CGSize(width: maximumDimension, height: maximumDimension)
-            let scale = max(maximumDimension / sourceSize.width, maximumDimension / sourceSize.height)
-            let scaled = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
-            drawRect = CGRect(
-                x: (maximumDimension - scaled.width) / 2,
-                y: (maximumDimension - scaled.height) / 2,
-                width: scaled.width,
-                height: scaled.height
-            )
-        } else {
-            let scale = min(1, maximumDimension / max(sourceSize.width, sourceSize.height))
-            targetSize = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
-            drawRect = CGRect(origin: .zero, size: targetSize)
-        }
+        let targetSize = CGSize(width: dimension, height: dimension)
+        let scale = max(dimension / sourceSize.width, dimension / sourceSize.height)
+        let scaled = CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+        let drawRect = CGRect(
+            x: (dimension - scaled.width) / 2,
+            y: (dimension - scaled.height) / 2,
+            width: scaled.width,
+            height: scaled.height
+        )
         let format = UIGraphicsImageRendererFormat.preferred()
         format.scale = 1
         format.opaque = true

@@ -38,7 +38,7 @@ struct CollectionDetailView: View {
             } label: { Image(systemName: "arrow.up.arrow.down") }
             .accessibilityLabel("Trier la collection")
         }
-        .onAppear { Task { await load() } }
+        .task { await load() }
         .onChange(of: collection.sort) { _, value in
             Task {
                 do {
