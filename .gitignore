@@ -1,0 +1,40 @@
+# Apple / Xcode
+.DS_Store
+DerivedData/
+build/
+*.xcarchive
+*.ipa
+*.dSYM
+xcuserdata/
+*.xcuserstate
+
+# Generated Xcode project (recreate with xcodegen generate)
+LexiFR.xcodeproj/
+
+# Raw Kaikki data and generated full databases
+*.jsonl
+*.jsonl.gz
+*.jsonl.bz2
+*.jsonl.xz
+*.crdownload
+Database/*.sqlite
+Database/*.sqlite-*
+Database/*.sqlite.gz
+LexiFR/Resources/french.sqlite
+LexiFR/Resources/*.sqlite.stats.json
+*.sqlite-shm
+*.sqlite-wal
+
+# Keep deterministic fixtures and their tiny bundled database
+!Tests/Fixtures/test_dictionary.jsonl
+!LexiFR/Resources/french.sample.sqlite
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local secrets/configuration
+.env
+*.p12
+*.mobileprovision

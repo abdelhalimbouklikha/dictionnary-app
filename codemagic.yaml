@@ -1,0 +1,108 @@
+definitions:
+  environment: &environment
+    xcode: latest
+  prepare_project: &prepare_project
+    name: Préparer le projet et le dictionnaire
+    script: |
+      set -euo pipefail
+      brew install xcodegen
+      if [ ! -f Database/french.sqlite ]; then
+        if [ -n "${LEXIFR_DICTIONARY_URL:-}" ]; then
+          curl --fail --location --retry 3 "$LEXIFR_DICTIONARY_URL" --output /tmp/french.dictionary
+          if gzip -t /tmp/french.dictionary 2>/dev/null; then
+            gzip -dc /tmp/french.dictionary > Database/french.sqlite
+          else
+            mv /tmp/french.dictionary Database/french.sqlite
+          fi
+        else
+          echo "La base complète manque. Fournissez LEXIFR_DICTIONARY_URL ou restaurez french.sqlite depuis le cache Codemagic."
+          exit 1
+        fi
+      fi
+      python3 Tools/verify_dictionary.py --database Database/french.sqlite --minimum-entries 100000
+      xcodegen generate
+workflows:
+  ios-tests:
+    name: Tests iOS (base miniature)
+    instance_type: mac_mini_m2
+    max_build_duration: 30
+    environment:
+      <<: *environment
+      groups:
+        - lexifr_config
+    scripts:
+      - name: Générer le projet
+        script: |
+          brew install xcodegen
+          xcodegen generate
+      - name: Tests unitaires et smoke tests
+        script: |
+          xcodebuild test \
+            -project LexiFR.xcodeproj \
+            -scheme LexiFR \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            CODE_SIGNING_ALLOWED=NO
+    artifacts:
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Logs/Test/*.xcresult
+
+  ios-ad-hoc:
+    name: IPA Ad Hoc iPhone
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      <<: *environment
+      groups:
+        - lexifr_config
+      ios_signing:
+        distribution_type: ad_hoc
+        bundle_identifier: $LEXIFR_BUNDLE_ID
+    cache:
+      cache_paths:
+        - $CM_BUILD_DIR/Database/french.sqlite
+    scripts:
+      - *prepare_project
+      - name: Configurer la signature
+        script: xcode-project use-profiles
+      - name: Tests unitaires
+        script: |
+          xcodebuild test \
+            -project LexiFR.xcodeproj \
+            -scheme LexiFR \
+            -destination 'platform=iOS Simulator,name=iPhone 16 Pro' \
+            -only-testing:LexiFRTests \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Construire l’IPA
+        script: xcode-project build-ipa --project LexiFR.xcodeproj --scheme LexiFR
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - $HOME/Library/Developer/Xcode/DerivedData/**/Logs/Test/*.xcresult
+
+  ios-app-store:
+    name: Archive TestFlight / App Store
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      <<: *environment
+      groups:
+        - lexifr_config
+        - app_store_credentials
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: $LEXIFR_BUNDLE_ID
+    cache:
+      cache_paths:
+        - $CM_BUILD_DIR/Database/french.sqlite
+    scripts:
+      - *prepare_project
+      - name: Configurer la signature
+        script: xcode-project use-profiles
+      - name: Construire l’IPA
+        script: xcode-project build-ipa --project LexiFR.xcodeproj --scheme LexiFR
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true
