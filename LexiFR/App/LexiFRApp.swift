@@ -28,14 +28,18 @@ final class AppModel: ObservableObject {
 
     init() {
         do {
-            dictionary = try DictionaryRepository()
-            userStore = try UserStore()
-            imageStore = try WordImageStore()
+            let dictionary = try DictionaryRepository()
+            let userStore = try UserStore()
+            let imageStore = try WordImageStore()
+
+            self.dictionary = dictionary
+            self.userStore = userStore
+            self.imageStore = imageStore
         } catch {
-            dictionary = nil
-            userStore = nil
-            imageStore = nil
-            launchError = error.localizedDescription
+            self.dictionary = nil
+            self.userStore = nil
+            self.imageStore = nil
+            self.launchError = error.localizedDescription
         }
     }
 }
